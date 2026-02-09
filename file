@@ -1,0 +1,137 @@
+import cv2
+import argparse
+import supervision as sv
+import numpy as np
+from ultralytics import YOLO
+# https://www.makesense.ai/
+# https://www.pexels.com/
+
+POLYGON =  np.array([
+        [2.4759036144578315,356.5692771084337],
+        [111.41566265060241,307.05120481927713],
+        [298.7590361445783,532.3584337349398],
+        [756.8012048192771,533.1837349397591],
+        [796.4156626506025,395.35843373493975],
+        [920.2108433734941,335.1114457831325],
+        [645.3855421686748,42.12951807228914],
+        [5.77710843373494,47.90662650602408]
+], dtype=np.int32)
+CLASSES = [0,1,2,3,5,7]
+
+LINE_1_START = sv.Point(442, 56)
+LINE_1_END = sv.Point(442, 165)
+
+LINE_2_START = sv.Point(242, 428)
+LINE_2_END = sv.Point(772, 415)
+
+LINE_3_START = sv.Point(296, 214)
+LINE_3_END = sv.Point(296, 481)
+
+LINE_ZONE_1 = sv.LineZone(
+    start=LINE_1_START,
+    end=LINE_1_END,
+    triggering_anchors=(sv.Position.BOTTOM_CENTER,)
+)
+
+LINE_ZONE_2 = sv.LineZone(
+    start=LINE_2_START,
+    end=LINE_2_END,
+    triggering_anchors=(sv.Position.BOTTOM_CENTER,)
+)
+
+LINE_ZONE_3 = sv.LineZone(
+    start=LINE_3_START,
+    end=LINE_3_END,
+    triggering_anchors=(sv.Position.BOTTOM_CENTER,)
+)
+
+model = YOLO("yolo11s.pt")
+# frames to be seen to recognize item
+tracker = sv.ByteTrack(minimum_consecutive_frames=3)
+tracker.reset()
+smoother = sv.DetectionsSmoother()
+
+polygon_zone = sv.PolygonZone(POLYGON,triggering_anchors=(sv.Position.BOTTOM_CENTER,))
+box_corner_annotator = sv.BoxCornerAnnotator()
+label_annotator = sv.LabelAnnotator(text_position=sv.Position.CENTER, text_color=sv.Color.BLACK)
+trace_annotator = sv.TraceAnnotator(trace_length=20)
+line_zone_annotator = sv.LineZoneAnnotator(text_orient_to_line=True)
+line_zone_annotator_multi = sv.LineZoneAnnotatorMulticlass(
+    text_scale=0.5,
+    text_thickness=1,
+    table_margin=20
+)
+
+def main(video_file_path):
+    frame_generator = sv.get_video_frames_generator(source_path=video_file_path)
+
+    for frame in frame_generator:
+        frame = cv2.resize(frame, (960, 540))
+        result = model(frame, device="cpu", verbose=False, imgsz=1280)[0]
+        detections = sv.Detections.from_ultralytics(result)
+        detections = detections[polygon_zone.trigger(detections)]
+        detections = detections[np.isin(detections.class_id, CLASSES)]
+        detections = tracker.update_with_detections(detections)
+        detections = smoother.update_with_detections(detections)
+
+        labels = [
+            f"#{tracker_id}"
+            for tracker_id in detections.tracker_id
+        ]
+
+        # draw line information
+        LINE_ZONE_1.trigger(detections=detections)
+        LINE_ZONE_2.trigger(detections=detections)
+        LINE_ZONE_3.trigger(detections=detections)
+
+        annotated_frame = frame.copy()
+        annotated_frame = sv.draw_polygon(
+             scene=annotated_frame,
+            polygon=POLYGON,
+            color=sv.Color.RED,
+            thickness=2
+        )
+        annotated_frame = box_corner_annotator.annotate(
+            scene=annotated_frame,
+            detections=detections
+        )
+        annotated_frame = label_annotator.annotate(
+            scene=annotated_frame,
+            detections=detections,
+            labels=labels
+        )
+        annotated_frame = trace_annotator.annotate(
+            scene=annotated_frame,
+            detections=detections,
+        )
+        annotated_frame = line_zone_annotator.annotate(
+            annotated_frame, line_counter=LINE_ZONE_1
+        )
+        annotated_frame = line_zone_annotator.annotate(
+            annotated_frame, line_counter=LINE_ZONE_2
+        )
+        annotated_frame = line_zone_annotator.annotate(
+            annotated_frame, line_counter=LINE_ZONE_3
+        )
+        annotated_frame = line_zone_annotator_multi.annotate(
+            annotated_frame, 
+            line_zones=[LINE_ZONE_1, LINE_ZONE_2, LINE_ZONE_3],
+            line_zone_labels=["upper line", "lower line", "left"]
+        )
+
+        # print(detections)
+        cv2.imshow("Proceed Video", annotated_frame)
+        if cv2.waitKey(1) & 0xFF == ord("q"):
+            break
+    cv2.destroyAllWindows()
+
+    print("Processing file", video_file_path)
+
+
+if __name__ == "__main__":
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--video_file_path")
+
+    args = parser.parse_args()
+
+    main(args.video_file_path)
